@@ -32,22 +32,7 @@ func NewFileSource(path string) (*FileSource, error) {
 // Lines returns a channel of lines and a channel of errors.
 // The lines channel is closed when EOF is reached or an error occurs.
 func (fs *FileSource) Lines() (<-chan string, <-chan error) {
-	lines := make(chan string)
-	errs := make(chan error, 1)
-
-	go func() {
-		defer close(lines)
-		defer close(errs)
-		scanner := bufio.NewScanner(fs.file)
-		for scanner.Scan() {
-			lines <- scanner.Text()
-		}
-		if err := scanner.Err(); err != nil {
-			errs <- fmt.Errorf("reader: scanning %q: %w", fs.path, err)
-		}
-	}()
-
-	return lines, errs
+	return linesFromReader(fs.file, fs.path)
 }
 
 // Close closes the underlying file.
@@ -65,13 +50,14 @@ func NewStdinSource() *StdinSource {
 
 // Lines returns a channel of lines read from stdin.
 func (s *StdinSource) Lines() (<-chan string, <-chan error) {
-	return linesFromReader(os.Stdin)
+	return linesFromReader(os.Stdin, "stdin")
 }
 
 // Close is a no-op for stdin.
 func (s *StdinSource) Close() error { return nil }
 
-func linesFromReader(r io.Reader) (<-chan string, <-chan error) {
+// linesFromReader reads lines from r, labeling any scan errors with name.
+func linesFromReader(r io.Reader, name string) (<-chan string, <-chan error) {
 	lines := make(chan string)
 	errs := make(chan error, 1)
 	go func() {
@@ -82,7 +68,7 @@ func linesFromReader(r io.Reader) (<-chan string, <-chan error) {
 			lines <- scanner.Text()
 		}
 		if err := scanner.Err(); err != nil {
-			errs <- fmt.Errorf("reader: scanning stdin: %w", err)
+			errs <- fmt.Errorf("reader: scanning %s: %w", name, err)
 		}
 	}()
 	return lines, errs
