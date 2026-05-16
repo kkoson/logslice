@@ -1,81 +1,70 @@
-// Package labelmap provides key-value label enrichment for log lines.
-// A Mapper matches a log line against a regular expression and attaches
-// named capture groups as structured labels, enabling downstream formatters
-// and aggregators to consume pre-parsed metadata without re-parsing.
 package labelmap
 
 import (
-	"fmt"
+	"errors"
 	"regexp"
 )
 
-// Labels is an ordered map of label name → value extracted from a log line.
-type Labels map[string]string
-
-// Mapper extracts named labels from log lines via a compiled regular expression.
+// Mapper extracts named capture groups from a log line and returns them as a
+// label map. Static overrides are merged with lower priority than captured
+// values so that dynamic data always wins.
 type Mapper struct {
-	re     *regexp.Regexp
-	groups []string // ordered named capture group names
+	re        *regexp.Regexp
+	groups    []string
+	overrides map[string]string
 }
 
-// New compiles pattern and returns a Mapper ready to label log lines.
-// pattern must contain at least one named capture group (e.g. (?P<level>\w+)).
-// Returns an error if pattern is invalid or contains no named groups.
-func New(pattern string) (*Mapper, error) {
+// New compiles pattern and returns a Mapper. pattern must contain at least one
+// named capture group. overrides is an optional set of static key=value pairs
+// that are added to every successful match result.
+func New(pattern string, overrides map[string]string) (*Mapper, error) {
 	if pattern == "" {
-		return nil, fmt.Errorf("labelmap: pattern must not be empty")
+		return nil, errors.New("labelmap: pattern must not be empty")
 	}
-
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("labelmap: invalid pattern: %w", err)
+		return nil, err
 	}
-
 	groups := namedGroups(re)
 	if len(groups) == 0 {
-		return nil, fmt.Errorf("labelmap: pattern contains no named capture groups")
+		return nil, errors.New("labelmap: pattern must contain at least one named capture group")
 	}
-
-	return &Mapper{re: re, groups: groups}, nil
+	ovrCopy := make(map[string]string, len(overrides))
+	for k, v := range overrides {
+		ovrCopy[k] = v
+	}
+	return &Mapper{re: re, groups: groups, overrides: ovrCopy}, nil
 }
 
-// Apply matches line against the compiled pattern and returns a Labels map
-// populated with every named capture group that participated in the match.
-// If the line does not match, Apply returns nil, nil — callers should treat
-// a nil Labels as "no labels available" rather than an error condition.
-func (m *Mapper) Apply(line string) (Labels, error) {
+// Map attempts to match line against the compiled pattern. On success it
+// returns a label map populated with static overrides and captured values
+// (captured values take precedence). Returns false when the line does not
+// match.
+func (m *Mapper) Map(line string) (map[string]string, bool) {
 	match := m.re.FindStringSubmatch(line)
 	if match == nil {
-		return nil, nil
+		return nil, false
 	}
-
-	labels := make(Labels, len(m.groups))
-	for _, name := range m.groups {
-		idx := m.re.SubexpIndex(name)
-		if idx >= 0 && idx < len(match) {
-			labels[name] = match[idx]
+	labels := make(map[string]string, len(m.overrides)+len(m.groups))
+	for k, v := range m.overrides {
+		labels[k] = v
+	}
+	for i, name := range m.re.SubexpNames() {
+		if i == 0 || name == "" {
+			continue
 		}
+		labels[name] = match[i]
 	}
-	return labels, nil
+	return labels, true
 }
 
-// Groups returns the ordered list of named capture groups that this Mapper
-// will populate. Useful for consumers that need to know the label schema
-// before processing any lines (e.g. CSV header generation).
-func (m *Mapper) Groups() []string {
-	out := make([]string, len(m.groups))
-	copy(out, m.groups)
-	return out
-}
-
-// namedGroups returns the named subexpression names for re, preserving
-// declaration order and skipping the implicit empty name at index 0.
+// namedGroups returns the list of named subexpression names for re.
 func namedGroups(re *regexp.Regexp) []string {
-	var groups []string
+	var out []string
 	for _, name := range re.SubexpNames() {
 		if name != "" {
-			groups = append(groups, name)
+			out = append(out, name)
 		}
 	}
-	return groups
+	return out
 }
